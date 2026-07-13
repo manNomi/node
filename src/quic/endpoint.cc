@@ -1230,6 +1230,7 @@ BaseObjectPtr<Session> Endpoint::Connect(
   if (!Start()) return {};
 
   Session::Config config(env(), options, local_address(), remote_address);
+  if (!config.is_valid()) return {};
 
   Debug(this,
         "Connecting to %s with options %s and config %s [has 0rtt ticket? %s]",
@@ -1528,6 +1529,7 @@ void Endpoint::Receive(const uint8_t* data,
     // need a 20-byte SCID to properly match short_dcidlen passed to
     // ngtcp2_pkt_decode_version_cid.
     auto server_scid = server_state_->options.cid_factory->Generate();
+    if (!server_scid) return;
 
     // At this point, we start to set up the configuration for our local
     // session. We pass the received scid here as the dcid argument value
@@ -1541,6 +1543,7 @@ void Endpoint::Receive(const uint8_t* data,
                            scid,
                            server_scid,
                            dcid);
+    if (!config.is_valid()) return;
 
     Debug(this, "Using session config %s", config);
 

@@ -78,6 +78,7 @@ class SessionManager;
   V(ca, "ca")                                                                  \
   V(cc_algorithm, "cc")                                                        \
   V(certs, "certs")                                                            \
+  V(cid_generator, "cidGenerator")                                             \
   V(code, "code")                                                              \
   V(ciphers, "ciphers")                                                        \
   V(crl, "crl")                                                                \

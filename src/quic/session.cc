@@ -46,6 +46,7 @@ using v8::Global;
 using v8::HandleScope;
 using v8::Int32;
 using v8::Integer;
+using v8::Isolate;
 using v8::Just;
 using v8::Local;
 using v8::LocalVector;
@@ -250,6 +251,71 @@ SessionStatsArena& GetSessionStatsArena(BindingData& binding) {
 class Http3Application;
 
 namespace {
+class JSCIDFactory final : public CID::Factory {
+ public:
+  JSCIDFactory(Environment* env, Local<Function> generator) : env_(env) {
+    generator_.Reset(env->isolate(), generator);
+  }
+
+  ~JSCIDFactory() override { generator_.Reset(); }
+
+  DISALLOW_COPY_AND_MOVE(JSCIDFactory)
+
+  const CID Generate(size_t length_hint) const override {
+    const auto maybe_cid = GenerateCID(length_hint);
+    if (!maybe_cid.has_value()) return CID::kInvalid;
+    return maybe_cid.value();
+  }
+
+  const CID GenerateInto(ngtcp2_cid* cid,
+                         size_t length_hint = CID::kMaxLength) const override {
+    const auto maybe_cid = GenerateCID(length_hint);
+    if (!maybe_cid.has_value()) return CID::kInvalid;
+    const CID& generated = maybe_cid.value();
+    ngtcp2_cid_init(cid, generated, generated.length());
+    return CID(cid);
+  }
+
+ private:
+  std::optional<CID> GenerateCID(size_t length_hint) const {
+    if (!env_->can_call_into_js()) return std::nullopt;
+
+    Isolate* isolate = env_->isolate();
+    HandleScope handle_scope(isolate);
+    Local<Function> generator = generator_.Get(isolate);
+    Local<Value> argv[] = {Integer::NewFromUnsigned(isolate, length_hint)};
+    Local<Value> result;
+
+    if (!generator
+             ->Call(env_->context(), Undefined(isolate), arraysize(argv), argv)
+             .ToLocal(&result)) {
+      return std::nullopt;
+    }
+
+    if (!result->IsArrayBufferView()) {
+      THROW_ERR_INVALID_ARG_TYPE(
+          env_, "options.cidGenerator must return an ArrayBufferView");
+      return std::nullopt;
+    }
+
+    Local<ArrayBufferView> view = result.As<ArrayBufferView>();
+    size_t length = view->ByteLength();
+    if (length < CID::kMinLength || length > CID::kMaxLength) {
+      THROW_ERR_INVALID_ARG_VALUE(
+          env_,
+          "options.cidGenerator must return a CID between 1 and 20 bytes");
+      return std::nullopt;
+    }
+
+    const uint8_t* data = static_cast<const uint8_t*>(view->Buffer()->Data()) +
+                          view->ByteOffset();
+    return CID(data, length);
+  }
+
+  Environment* env_;
+  Global<Function> generator_;
+};
+
 constexpr std::string to_string(PreferredAddress::Policy policy) {
   switch (policy) {
     case PreferredAddress::Policy::USE_PREFERRED:
@@ -470,6 +536,12 @@ Session::Config::Config(Environment* env,
       dcid(dcid),
       scid(scid),
       ocid(ocid) {
+  if (side == Side::SERVER &&
+      (options.transport_params.preferred_address_ipv4.has_value() ||
+       options.transport_params.preferred_address_ipv6.has_value())) {
+    preferred_address_cid = options.cid_factory->Generate();
+  }
+
   ngtcp2_settings_default(&settings);
   settings.initial_ts = uv_hrtime();
 
@@ -533,6 +605,17 @@ Session::Config::Config(Environment* env,
     ngtcp2_vec vec = options.token.value();
     set_token(vec.base, vec.len, NGTCP2_TOKEN_TYPE_NEW_TOKEN);
   }
+}
+
+bool Session::Config::is_valid() const {
+  if (!scid) return false;
+  if (side == Side::SERVER &&
+      (options.transport_params.preferred_address_ipv4.has_value() ||
+       options.transport_params.preferred_address_ipv6.has_value()) &&
+      !preferred_address_cid) {
+    return false;
+  }
+  return true;
 }
 
 Session::Config::Config(Environment* env,
@@ -697,8 +780,25 @@ Maybe<Session::Options> Session::Options::From(Environment* env,
     }
   }
 
-  // TODO(@jasnell): Later we will also support setting the CID::Factory.
-  // For now, we're just using the default random factory.
+  // Parse the optional CID generator callback. The callback receives the
+  // requested CID length hint and must synchronously return an ArrayBufferView
+  // containing a QUIC CID between 1 and 20 bytes.
+  {
+    Local<Value> generator_val;
+    if (params->Get(env->context(), state.cid_generator_string())
+            .ToLocal(&generator_val) &&
+        !generator_val->IsUndefined()) {
+      if (!generator_val->IsFunction()) {
+        THROW_ERR_INVALID_ARG_TYPE(
+            env, "options.cidGenerator must be a function");
+        return Nothing<Options>();
+      }
+      auto cid_factory = std::make_shared<JSCIDFactory>(
+          env, generator_val.As<Function>());
+      options.cid_factory = cid_factory.get();
+      options.cid_factory_holder = std::move(cid_factory);
+    }
+  }
 
   // Parse the optional NEW_TOKEN for address validation on reconnection.
   Local<Value> token_val;
@@ -716,7 +816,6 @@ Maybe<Session::Options> Session::Options::From(Environment* env,
 void Session::Options::MemoryInfo(MemoryTracker* tracker) const {
   tracker->TrackField("transport_params", transport_params);
   tracker->TrackField("crypto_options", tls_options);
-  tracker->TrackField("cid_factory_ref", cid_factory_ref);
 }
 
 std::string Session::Options::ToString() const {
@@ -1325,8 +1424,9 @@ struct Session::Impl final : public MemoryRetainer {
                             size_t cidlen,
                             void* user_data) {
     NGTCP2_CALLBACK_SCOPE(session)
-    session->GenerateNewConnectionId(cid, cidlen, token);
-    return NGTCP2_SUCCESS;
+    return session->GenerateNewConnectionId(cid, cidlen, token)
+               ? NGTCP2_SUCCESS
+               : NGTCP2_ERR_CALLBACK_FAILURE;
   }
 
   static int on_handshake_completed(ngtcp2_conn* conn, void* user_data) {
@@ -2199,6 +2299,7 @@ BaseObjectPtr<Session> Session::Create(
     const Config& config,
     TLSContext* tls_context,
     const std::optional<SessionTicket>& ticket) {
+  if (!config.is_valid()) return {};
   JS_NEW_INSTANCE_OR_RETURN(endpoint->env(), obj, {});
   return MakeDetachedBaseObject<Session>(
       endpoint, obj, config, tls_context, ticket);
@@ -2287,7 +2388,7 @@ Session::QuicConnectionPointer Session::InitConnection() {
   TransportParams::Config tp_config(side_, config().ocid, config().retry_scid);
   TransportParams transport_params(tp_config,
                                    config().options.transport_params);
-  transport_params.GenerateSessionTokens(this);
+  CHECK(transport_params.GenerateSessionTokens(this));
 
   switch (side_) {
     case Side::SERVER: {
@@ -3751,16 +3852,21 @@ void Session::DatagramReceived(const uint8_t* data,
   EmitDatagram(Store(std::move(backing), datalen), flag);
 }
 
-void Session::GenerateNewConnectionId(ngtcp2_cid* cid,
+bool Session::GenerateNewConnectionId(ngtcp2_cid* cid,
                                       size_t len,
                                       ngtcp2_stateless_reset_token* token) {
   DCHECK(!is_destroyed());
   CID cid_ = impl_->config_.options.cid_factory->GenerateInto(cid, len);
+  if (!cid_) {
+    Debug(this, "Failed to generate new connection id");
+    return false;
+  }
   Debug(this, "Generated new connection id %s", cid_);
   StatelessResetToken new_token(
       token, endpoint().options().reset_token_secret, cid_);
   endpoint().AssociateCID(cid_, impl_->config_.scid);
   endpoint().AssociateStatelessResetToken(new_token, this);
+  return true;
 }
 
 bool Session::HandshakeCompleted() {
