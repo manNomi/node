@@ -11,6 +11,7 @@
 #include <node_sockaddr.h>
 #include <timer_wrap.h>
 #include <util.h>
+#include <memory>
 #include <optional>
 #include "bindingdata.h"
 #include "cid.h"
@@ -166,9 +167,9 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
     // A reference to the CID::Factory used to generate CID instances
     // for this session.
     const CID::Factory* cid_factory = &CID::Factory::random();
-    // If the CID::Factory is a base object, we keep a reference to it
-    // so that it cannot be garbage collected.
-    BaseObjectPtr<BaseObject> cid_factory_ref;
+    // Keeps application-provided CID factories alive for the lifetime of the
+    // options object and all copied session configs.
+    std::shared_ptr<const CID::Factory> cid_factory_holder;
 
     // Application-specific options (used for HTTP/3 if the negotiated
     // ALPN selects Http3ApplicationImpl).
@@ -325,6 +326,8 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
                    ngtcp2_token_type type = NGTCP2_TOKEN_TYPE_UNKNOWN);
     void set_token(const RetryToken& token);
     void set_token(const RegularToken& token);
+
+    bool is_valid() const;
 
     void MemoryInfo(MemoryTracker* tracker) const override;
     SET_MEMORY_INFO_NAME(Session::Config)
@@ -684,7 +687,7 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
   void DatagramReceived(const uint8_t* data,
                         size_t datalen,
                         DatagramReceivedFlags flag);
-  void GenerateNewConnectionId(ngtcp2_cid* cid,
+  bool GenerateNewConnectionId(ngtcp2_cid* cid,
                                size_t len,
                                ngtcp2_stateless_reset_token* token);
   bool HandshakeCompleted();

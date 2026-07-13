@@ -3033,6 +3033,25 @@ added: v23.8.0
 The minimum QUIC version number to allow. This is an advanced option that users
 typically won't have need to specify.
 
+#### `sessionOptions.cidGenerator`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* Type: {Function}
+
+An optional synchronous callback used to generate local QUIC connection IDs.
+The callback receives a numeric length hint and must return an
+{ArrayBufferView} containing a connection ID between 1 and 20 bytes. The
+returned bytes are copied before the callback returns.
+
+By default, connection IDs are generated randomly. Applications can provide this
+option to encode routing information for load balancers or other deployment
+specific connection ID policies. Generated connection IDs must remain
+unlinkable by observers unless the application deliberately accepts that privacy
+trade-off.
+
 #### `sessionOptions.preferredAddressPolicy`
 
 <!-- YAML

@@ -143,7 +143,7 @@ class TransportParams final {
   // will be false.
   TransportParams(const ngtcp2_vec& buf, Version version = Version::V1);
 
-  void GenerateSessionTokens(Session* session);
+  bool GenerateSessionTokens(Session* session);
 
   operator const ngtcp2_transport_params&() const;
   operator const ngtcp2_transport_params*() const;
@@ -172,7 +172,7 @@ class TransportParams final {
 
  private:
   void SetPreferredAddress(const SocketAddress& address);
-  void GeneratePreferredAddressToken(Session* session);
+  bool GeneratePreferredAddressToken(Session* session);
   void GenerateStatelessResetToken(const Endpoint& endpoint, const CID& cid);
 
   ngtcp2_transport_params params_{};

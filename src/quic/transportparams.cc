@@ -307,11 +307,12 @@ void TransportParams::SetPreferredAddress(const SocketAddress& address) {
   UNREACHABLE();
 }
 
-void TransportParams::GenerateSessionTokens(Session* session) {
+bool TransportParams::GenerateSessionTokens(Session* session) {
   if (session->is_server()) {
     GenerateStatelessResetToken(session->endpoint(), session->config().scid);
-    GeneratePreferredAddressToken(session);
+    return GeneratePreferredAddressToken(session);
   }
+  return true;
 }
 
 void TransportParams::GenerateStatelessResetToken(const Endpoint& endpoint,
@@ -322,11 +323,11 @@ void TransportParams::GenerateStatelessResetToken(const Endpoint& endpoint,
   endpoint.GenerateNewStatelessResetToken(params_.stateless_reset_token, cid);
 }
 
-void TransportParams::GeneratePreferredAddressToken(Session* session) {
+bool TransportParams::GeneratePreferredAddressToken(Session* session) {
   DCHECK(ptr_ == &params_);
   Session::Config& config = session->config();
   if (params_.preferred_addr_present) {
-    config.preferred_address_cid = session->new_cid();
+    if (!config.preferred_address_cid) return false;
     params_.preferred_addr.cid = config.preferred_address_cid;
     auto& endpoint = session->endpoint();
     endpoint.AssociateStatelessResetToken(
@@ -341,6 +342,7 @@ void TransportParams::GeneratePreferredAddressToken(Session* session) {
     auto& mgr = BindingData::Get(session->env()).session_manager();
     mgr.AssociateCID(config.preferred_address_cid, config.scid);
   }
+  return true;
 }
 
 v8::MaybeLocal<v8::Object> TransportParams::ToObject(Environment* env) const {
