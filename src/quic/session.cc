@@ -535,21 +535,6 @@ Session::Config::Config(Environment* env,
   }
 }
 
-Session::Config::Config(Environment* env,
-                        const Options& options,
-                        const SocketAddress& local_address,
-                        const SocketAddress& remote_address,
-                        const CID& ocid)
-    : Config(env,
-             Side::CLIENT,
-             options,
-             options.version,
-             local_address,
-             remote_address,
-             CID::Factory::random().Generate(NGTCP2_MIN_INITIAL_DCIDLEN),
-             options.cid_factory->Generate(),
-             ocid) {}
-
 void Session::Config::MemoryInfo(MemoryTracker* tracker) const {
   tracker->TrackField("options", options);
   tracker->TrackField("local_address", local_address);
@@ -697,9 +682,6 @@ Maybe<Session::Options> Session::Options::From(Environment* env,
     }
   }
 
-  // TODO(@jasnell): Later we will also support setting the CID::Factory.
-  // For now, we're just using the default random factory.
-
   // Parse the optional NEW_TOKEN for address validation on reconnection.
   Local<Value> token_val;
   if (params->Get(env->context(), state.token_string()).ToLocal(&token_val) &&
@@ -716,7 +698,6 @@ Maybe<Session::Options> Session::Options::From(Environment* env,
 void Session::Options::MemoryInfo(MemoryTracker* tracker) const {
   tracker->TrackField("transport_params", transport_params);
   tracker->TrackField("crypto_options", tls_options);
-  tracker->TrackField("cid_factory_ref", cid_factory_ref);
 }
 
 std::string Session::Options::ToString() const {
@@ -1325,8 +1306,9 @@ struct Session::Impl final : public MemoryRetainer {
                             size_t cidlen,
                             void* user_data) {
     NGTCP2_CALLBACK_SCOPE(session)
-    session->GenerateNewConnectionId(cid, cidlen, token);
-    return NGTCP2_SUCCESS;
+    return session->GenerateNewConnectionId(cid, cidlen, token)
+               ? NGTCP2_SUCCESS
+               : NGTCP2_ERR_CALLBACK_FAILURE;
   }
 
   static int on_handshake_completed(ngtcp2_conn* conn, void* user_data) {
@@ -3751,16 +3733,21 @@ void Session::DatagramReceived(const uint8_t* data,
   EmitDatagram(Store(std::move(backing), datalen), flag);
 }
 
-void Session::GenerateNewConnectionId(ngtcp2_cid* cid,
+bool Session::GenerateNewConnectionId(ngtcp2_cid* cid,
                                       size_t len,
                                       ngtcp2_stateless_reset_token* token) {
   DCHECK(!is_destroyed());
-  CID cid_ = impl_->config_.options.cid_factory->GenerateInto(cid, len);
+  CID cid_ = endpoint().GenerateNewConnectionId(cid, len);
+  if (!cid_ || endpoint().is_closed() || endpoint().is_closing()) {
+    Debug(this, "Failed to generate new connection id");
+    return false;
+  }
   Debug(this, "Generated new connection id %s", cid_);
   StatelessResetToken new_token(
       token, endpoint().options().reset_token_secret, cid_);
   endpoint().AssociateCID(cid_, impl_->config_.scid);
   endpoint().AssociateStatelessResetToken(new_token, this);
+  return true;
 }
 
 bool Session::HandshakeCompleted() {
@@ -3849,10 +3836,6 @@ void Session::SelectPreferredAddress(PreferredAddress* preferredAddress) {
       break;
     }
   }
-}
-
-CID Session::new_cid(size_t len) const {
-  return options().cid_factory->Generate(len);
 }
 
 void Session::ProcessPendingBidiStreams() {

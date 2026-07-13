@@ -68,8 +68,8 @@ std::string Packet::ToString() const {
 Packet::Ptr Packet::CreateRetryPacket(Endpoint& endpoint,
                                       const PathDescriptor& path_descriptor,
                                       const TokenSecret& token_secret) {
-  auto& random = CID::Factory::random();
-  CID cid = random.Generate();
+  CID cid = endpoint.GenerateNewConnectionId();
+  if (!cid || endpoint.is_closed() || endpoint.is_closing()) return Ptr();
   RetryToken token(path_descriptor.version,
                    path_descriptor.remote_address,
                    cid,

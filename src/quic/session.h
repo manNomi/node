@@ -163,13 +163,6 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
     TLSContext::Options tls_options = TLSContext::Options::kDefault;
     std::unordered_map<std::string, TLSContext::Options> sni;
 
-    // A reference to the CID::Factory used to generate CID instances
-    // for this session.
-    const CID::Factory* cid_factory = &CID::Factory::random();
-    // If the CID::Factory is a base object, we keep a reference to it
-    // so that it cannot be garbage collected.
-    BaseObjectPtr<BaseObject> cid_factory_ref;
-
     // Application-specific options (used for HTTP/3 if the negotiated
     // ALPN selects Http3ApplicationImpl).
     Application_Options application_options = Application_Options::kDefault;
@@ -312,12 +305,6 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
            const SocketAddress& remote_address,
            const CID& dcid,
            const CID& scid,
-           const CID& ocid = CID::kInvalid);
-
-    Config(Environment* env,
-           const Options& options,
-           const SocketAddress& local_address,
-           const SocketAddress& remote_address,
            const CID& ocid = CID::kInvalid);
 
     void set_token(const uint8_t* token,
@@ -512,9 +499,6 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
   void ShutdownStream(stream_id id, QuicError error = QuicError());
   void ShutdownStreamWrite(stream_id id, QuicError code = QuicError());
 
-  // Use the configured CID::Factory to generate a new CID.
-  CID new_cid(size_t len = CID::kMaxLength) const;
-
   const TransportParams local_transport_params() const;
   const TransportParams remote_transport_params() const;
 
@@ -684,7 +668,7 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
   void DatagramReceived(const uint8_t* data,
                         size_t datalen,
                         DatagramReceivedFlags flag);
-  void GenerateNewConnectionId(ngtcp2_cid* cid,
+  bool GenerateNewConnectionId(ngtcp2_cid* cid,
                                size_t len,
                                ngtcp2_stateless_reset_token* token);
   bool HandshakeCompleted();

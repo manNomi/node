@@ -326,7 +326,7 @@ void TransportParams::GeneratePreferredAddressToken(Session* session) {
   DCHECK(ptr_ == &params_);
   Session::Config& config = session->config();
   if (params_.preferred_addr_present) {
-    config.preferred_address_cid = session->new_cid();
+    CHECK(config.preferred_address_cid);
     params_.preferred_addr.cid = config.preferred_address_cid;
     auto& endpoint = session->endpoint();
     endpoint.AssociateStatelessResetToken(

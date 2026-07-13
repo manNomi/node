@@ -29,6 +29,8 @@ namespace node {
 
 using v8::Array;
 using v8::ArrayBufferView;
+using v8::Function;
+using v8::Global;
 using v8::HandleScope;
 using v8::Integer;
 using v8::Just;
@@ -115,6 +117,23 @@ bool TokenBucket::consume(uint64_t now) {
   }
   return false;
 }
+
+class JSCIDGenerator final {
+ public:
+  JSCIDGenerator(Environment* env, Local<Function> generator) : env_(env) {
+    generator_.Reset(env->isolate(), generator);
+  }
+
+  ~JSCIDGenerator() { generator_.Reset(); }
+
+  DISALLOW_COPY_AND_MOVE(JSCIDGenerator)
+
+  Local<Function> Get() const { return generator_.Get(env_->isolate()); }
+
+ private:
+  Environment* env_;
+  Global<Function> generator_;
+};
 
 // ============================================================================
 // Endpoint::Options
@@ -245,8 +264,30 @@ Maybe<Endpoint::Options> Endpoint::Options::From(Environment* env,
 #endif
       !SET(udp_receive_buffer_size) || !SET(udp_send_buffer_size) ||
       !SET(udp_ttl) || !SET(idle_timeout) || !SET(reset_token_secret) ||
-      !SET(token_secret)) {
+      !SET(token_secret) || !SET(cid_length)) {
     return Nothing<Options>();
+  }
+
+  if (options.cid_length < CID::kMinLength ||
+      options.cid_length > CID::kMaxLength) {
+    THROW_ERR_INVALID_ARG_VALUE(
+        env, "The cidLength option must be between 1 and 20");
+    return Nothing<Options>();
+  }
+
+  Local<Value> cid_generator;
+  if (!params->Get(env->context(), state.cid_generator_string())
+           .ToLocal(&cid_generator)) {
+    return Nothing<Options>();
+  }
+  if (!cid_generator->IsUndefined()) {
+    if (!cid_generator->IsFunction()) {
+      THROW_ERR_INVALID_ARG_TYPE(env,
+                                 "The cidGenerator option must be a function");
+      return Nothing<Options>();
+    }
+    options.cid_generator =
+        std::make_shared<JSCIDGenerator>(env, cid_generator.As<Function>());
   }
 
   Local<Value> address;
@@ -358,6 +399,9 @@ std::string Endpoint::Options::ToString() const {
 #endif
   res += prefix + "reset token secret: " + reset_token_secret.ToString();
   res += prefix + "token secret: " + token_secret.ToString();
+  res += prefix + "cid length: " + std::to_string(cid_length);
+  res += prefix + "custom cid generator: " +
+         boolToString(cid_generator != nullptr);
   res += prefix + "ipv6 only: " + boolToString(ipv6_only);
   res += prefix + "reuse port: " + boolToString(reuse_port);
   res += prefix +
@@ -788,6 +832,41 @@ RegularToken Endpoint::GenerateNewToken(uint32_t version,
         remote_address);
   DCHECK(!is_closed() && !is_closing());
   return RegularToken(version, remote_address, options_.token_secret);
+}
+
+CID Endpoint::GenerateNewConnectionId() {
+  BaseObjectPtr<Endpoint> self(this);
+  USE(self);
+  if (options_.cid_generator == nullptr) {
+    return CID::Factory::random().Generate(options_.cid_length);
+  }
+  if (!env()->can_call_into_js()) return CID::kInvalid;
+
+  HandleScope handle_scope(env()->isolate());
+  Local<Value> argv[] = {
+      Integer::NewFromUnsigned(env()->isolate(), options_.cid_length),
+  };
+  Local<Value> result;
+  if (!MakeCallback(options_.cid_generator->Get(), arraysize(argv), argv)
+           .ToLocal(&result)) {
+    return CID::kInvalid;
+  }
+
+  // The JavaScript wrapper validates the return type and exact length.
+  // Keep this defensive check because CID construction assumes valid input.
+  if (!result->IsArrayBufferView()) return CID::kInvalid;
+  Store store = Store::CopyFrom(result.As<ArrayBufferView>());
+  if (!store || store.length() != options_.cid_length) return CID::kInvalid;
+  ngtcp2_vec vec = store;
+  return CID(vec.base, vec.len);
+}
+
+CID Endpoint::GenerateNewConnectionId(ngtcp2_cid* cid, size_t length) {
+  if (length != options_.cid_length) return CID::kInvalid;
+  CID generated = GenerateNewConnectionId();
+  if (!generated) return CID::kInvalid;
+  ngtcp2_cid_init(cid, generated, generated.length());
+  return CID(cid);
 }
 
 SessionManager& Endpoint::session_manager() const {
@@ -1229,7 +1308,17 @@ BaseObjectPtr<Session> Endpoint::Connect(
   // If starting fails, the endpoint will be destroyed.
   if (!Start()) return {};
 
-  Session::Config config(env(), options, local_address(), remote_address);
+  CID scid = GenerateNewConnectionId();
+  if (!scid || is_closed() || is_closing()) return {};
+  Session::Config config(
+      env(),
+      Side::CLIENT,
+      options,
+      options.version,
+      local_address(),
+      remote_address,
+      CID::Factory::random().Generate(NGTCP2_MIN_INITIAL_DCIDLEN),
+      scid);
 
   Debug(this,
         "Connecting to %s with options %s and config %s [has 0rtt ticket? %s]",
@@ -1524,10 +1613,10 @@ void Endpoint::Receive(const uint8_t* data,
         this, "Accepting initial packet for %s from %s", dcid, remote_address);
 
     // Generate a fresh server SCID rather than reusing the client's original
-    // DCID. The client's original DCID is typically short (8 bytes) and we
-    // need a 20-byte SCID to properly match short_dcidlen passed to
-    // ngtcp2_pkt_decode_version_cid.
-    auto server_scid = server_state_->options.cid_factory->Generate();
+    // DCID. All locally generated CIDs use the endpoint's fixed length so
+    // short-header packets can be decoded consistently.
+    CID server_scid = GenerateNewConnectionId();
+    if (!server_scid || is_closed() || is_closing()) return;
 
     // At this point, we start to set up the configuration for our local
     // session. We pass the received scid here as the dcid argument value
@@ -1541,6 +1630,14 @@ void Endpoint::Receive(const uint8_t* data,
                            scid,
                            server_scid,
                            dcid);
+
+    if (server_state_->options.transport_params.preferred_address_ipv4
+            .has_value() ||
+        server_state_->options.transport_params.preferred_address_ipv6
+            .has_value()) {
+      config.preferred_address_cid = GenerateNewConnectionId();
+      if (!config.preferred_address_cid || is_closed() || is_closing()) return;
+    }
 
     Debug(this, "Using session config %s", config);
 
@@ -1794,7 +1891,7 @@ void Endpoint::Receive(const uint8_t* data,
   // valid QUIC header but there is still no guarantee that the packet can be
   // successfully processed.
   switch (ngtcp2_pkt_decode_version_cid(
-      &pversion_cid, data, len, NGTCP2_MAX_CIDLEN)) {
+      &pversion_cid, data, len, options_.cid_length)) {
     case 0:
       break;  // Supported version, continue processing.
     case NGTCP2_ERR_VERSION_NEGOTIATION: {
