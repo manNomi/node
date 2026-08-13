@@ -2724,6 +2724,19 @@ added:
 
 Establishing a QUIC connection failed.
 
+<a id="ERR_QUIC_CONNECTION_MIGRATION_FAILED"></a>
+
+### `ERR_QUIC_CONNECTION_MIGRATION_FAILED`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+> Stability: 1 - Experimental
+
+A QUIC connection migration failed during path validation or was interrupted
+before validation completed.
+
 <a id="ERR_QUIC_ENDPOINT_CLOSED"></a>
 
 ### `ERR_QUIC_ENDPOINT_CLOSED`

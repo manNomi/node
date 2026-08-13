@@ -213,9 +213,9 @@ class Endpoint final : public AsyncWrap, public Packet::Listener {
   void RemoveSession(const CID& cid, const SocketAddress& remote_address);
   BaseObjectPtr<Session> FindSession(const CID& cid);
 
-  // A single session may be associated with multiple CIDs.
-  // AssociateCID registers the mapping both in the Endpoint and the inner
-  // Endpoint.
+  // Associate peer-chosen CIDs from connection establishment with the
+  // session's primary SCID. Locally-generated CIDs that must be routable
+  // across endpoints are registered directly with SessionManager.
   void AssociateCID(const CID& cid, const CID& scid);
   void DisassociateCID(const CID& cid);
 
@@ -294,6 +294,10 @@ class Endpoint final : public AsyncWrap, public Packet::Listener {
       const Session::Options& options,
       std::optional<SessionTicket> sessionTicket = std::nullopt);
 
+  // Bind the UDP handle and start receiving packets. This is public to the
+  // native QUIC implementation so a Session can activate a new local path.
+  bool Start();
+
   // Returns the local address only if the endpoint has been bound. Before
   // the endpoint is bound, or after it is closed, this will abort due to
   // a failed check so it is important to check `is_closed()` before calling.
@@ -363,8 +367,6 @@ class Endpoint final : public AsyncWrap, public Packet::Listener {
   bool is_closed() const;
   bool is_closing() const;
   bool is_listening() const;
-
-  bool Start();
 
   // Destroy the endpoint if...
   // * There are no sessions,

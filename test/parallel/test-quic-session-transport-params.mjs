@@ -13,10 +13,12 @@ if (!hasQuic) {
 }
 
 const { listen, connect } = await import('../common/quic.mjs');
+const { QuicEndpoint } = await import('node:quic');
 
 const serverTransportParams = {
   initialMaxStreamsBidi: 200,
   initialMaxData: 2 * 1024 * 1024,
+  disableActiveMigration: true,
 };
 
 const clientTransportParams = {
@@ -48,7 +50,7 @@ const serverEndpoint = await listen(mustCall((serverSession) => {
             'ackDelayExponent should be positive');
   assert.ok(serverLocalParams.maxAckDelay > 0n,
             'maxAckDelay should be positive');
-  assert.strictEqual(serverLocalParams.disableActiveMigration, false);
+  assert.strictEqual(serverLocalParams.disableActiveMigration, true);
 
   serverSession.onstream = mustCall(async (stream) => {
     // After the stream arrives, the handshake is complete and
@@ -64,6 +66,7 @@ const serverEndpoint = await listen(mustCall((serverSession) => {
                        BigInt(clientTransportParams.initialMaxStreamsBidi));
     assert.strictEqual(serverRemoteParams.initialMaxData,
                        BigInt(clientTransportParams.initialMaxData));
+    assert.strictEqual(serverRemoteParams.disableActiveMigration, false);
 
     // CID fields should be present.
     assert.strictEqual(typeof serverRemoteParams.initialSCID, 'string');
@@ -96,6 +99,7 @@ assert.strictEqual(clientLocalParams.initialMaxStreamsBidi,
                    BigInt(clientTransportParams.initialMaxStreamsBidi));
 assert.strictEqual(clientLocalParams.initialMaxData,
                    BigInt(clientTransportParams.initialMaxData));
+assert.strictEqual(clientLocalParams.disableActiveMigration, false);
 
 const clientRemoteParams = clientSession.remoteTransportParams;
 assert.ok(clientRemoteParams != null,
@@ -108,6 +112,16 @@ assert.strictEqual(clientRemoteParams.initialMaxStreamsBidi,
                    BigInt(serverTransportParams.initialMaxStreamsBidi));
 assert.strictEqual(clientRemoteParams.initialMaxData,
                    BigInt(serverTransportParams.initialMaxData));
+assert.strictEqual(clientRemoteParams.disableActiveMigration, true);
+
+const migrationEndpoint = new QuicEndpoint({
+  address: '127.0.0.1:0',
+});
+await assert.rejects(clientSession.migrate(migrationEndpoint), {
+  code: 'ERR_INVALID_STATE',
+  message: /Peer disabled active connection migration/,
+});
+assert.strictEqual(migrationEndpoint.address, undefined);
 
 // CID fields should be present on the client's view of server params.
 assert.strictEqual(typeof clientRemoteParams.initialSCID, 'string');
@@ -134,4 +148,5 @@ assert.strictEqual(clientRemoteParams.initialMaxData,
                    serverLocalParams.initialMaxData);
 
 await clientSession.close();
+await migrationEndpoint.close();
 await serverEndpoint.close();
