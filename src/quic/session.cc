@@ -184,6 +184,7 @@ uint64_t MaxDatagramPayload(uint64_t max_frame_size) {
 
 #define SESSION_JS_METHODS(V)                                                  \
   V(Destroy, destroy, SIDE_EFFECT)                                             \
+  V(Migrate, migrate, SIDE_EFFECT)                                             \
   V(GetRemoteAddress, getRemoteAddress, NO_SIDE_EFFECT)                        \
   V(GetServername, getServername, NO_SIDE_EFFECT)                              \
   V(GetAlpnProtocol, getAlpnProtocol, NO_SIDE_EFFECT)                          \
@@ -949,11 +950,12 @@ struct Session::Impl final : public MemoryRetainer {
         ngtcp2_conn_get_active_dcid2(*session_, nullptr));
     ngtcp2_conn_get_active_dcid2(*session_, tokens.out());
 
+    auto& session_manager = BindingData::Get(env()).session_manager();
     endpoint->DisassociateCID(config_.dcid);
-    endpoint->DisassociateCID(config_.preferred_address_cid);
+    session_manager.DisassociateCID(config_.preferred_address_cid);
 
     for (size_t n = 0; n < cids.length(); n++) {
-      endpoint->DisassociateCID(CID(cids[n]));
+      session_manager.DisassociateCID(CID(cids[n]));
     }
 
     for (size_t n = 0; n < tokens.length(); n++) {
@@ -1102,6 +1104,52 @@ struct Session::Impl final : public MemoryRetainer {
       session->SendConnectionClose();
     }
     session->Destroy();
+  }
+
+  JS_METHOD(Migrate) {
+    auto env = Environment::GetCurrent(args);
+    Session* session;
+    ASSIGN_OR_RETURN_UNWRAP(&session, args.This());
+
+    if (session->is_destroyed()) {
+      return THROW_ERR_INVALID_STATE(env, "Session is destroyed");
+    }
+    if (session->is_server()) {
+      return THROW_ERR_INVALID_STATE(
+          env, "Only client sessions can initiate connection migration");
+    }
+
+    const ngtcp2_transport_params* remote_params =
+        session->remote_transport_params();
+    if (remote_params != nullptr && remote_params->disable_active_migration) {
+      return THROW_ERR_INVALID_STATE(
+          env, "Peer disabled active connection migration");
+    }
+    if (!session->impl_->state()->handshake_confirmed) {
+      return THROW_ERR_INVALID_STATE(env, "Handshake is not confirmed");
+    }
+
+    Endpoint* endpoint;
+    ASSIGN_OR_RETURN_UNWRAP(&endpoint, args[0]);
+    if (!endpoint->Start()) {
+      return THROW_ERR_INVALID_STATE(env, "Endpoint could not be started");
+    }
+
+    SocketAddress local_address = endpoint->local_address();
+    const auto* current_path = ngtcp2_conn_get_path2(*session);
+    Path path(local_address, SocketAddress(current_path->remote.addr));
+    SendPendingDataScope send_scope(session);
+    int err = ngtcp2_conn_initiate_migration(*session, &path, uv_hrtime());
+    if (err != 0) {
+      return THROW_ERR_INVALID_STATE(
+          env, "Connection migration failed: %s", ngtcp2_strerror(err));
+    }
+
+    // ngtcp2 immediately switches to a previously validated path and does not
+    // emit another path validation callback in that case.
+    const auto* active_path = ngtcp2_conn_get_path2(*session);
+    args.GetReturnValue().Set(local_address ==
+                              SocketAddress(active_path->local.addr));
   }
 
   // The SNI servername: null until the TLS parameters are final, then the
@@ -1657,7 +1705,9 @@ struct Session::Impl final : public MemoryRetainer {
                                      const ngtcp2_cid* cid,
                                      void* user_data) {
     NGTCP2_CALLBACK_SCOPE(session)
-    session->endpoint().DisassociateCID(CID(cid));
+    BindingData::Get(session->env())
+        .session_manager()
+        .DisassociateCID(CID(cid));
     return NGTCP2_SUCCESS;
   }
 
@@ -2761,11 +2811,15 @@ void Session::SetApplication(std::unique_ptr<Application> app) {
 
 const SocketAddress& Session::remote_address() const {
   DCHECK(!is_destroyed());
+  const auto* path = ngtcp2_conn_get_path2(*this);
+  impl_->remote_address_.Update(path->remote.addr, path->remote.addrlen);
   return impl_->remote_address_;
 }
 
 const SocketAddress& Session::local_address() const {
   DCHECK(!is_destroyed());
+  const auto* path = ngtcp2_conn_get_path2(*this);
+  impl_->local_address_.Update(path->local.addr, path->local.addrlen);
   return impl_->local_address_;
 }
 
@@ -3955,7 +4009,8 @@ bool Session::GenerateNewConnectionId(ngtcp2_cid* cid,
   Debug(this, "Generated new connection id %s", cid_);
   StatelessResetToken new_token(
       token, endpoint().options().reset_token_secret, cid_);
-  endpoint().AssociateCID(cid_, impl_->config_.scid);
+  BindingData::Get(env()).session_manager().AssociateCID(cid_,
+                                                         impl_->config_.scid);
   endpoint().AssociateStatelessResetToken(new_token, this);
   return true;
 }

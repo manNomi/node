@@ -70,7 +70,7 @@ Maybe<TransportParams::Options> TransportParams::Options::From(
       !SET(initial_max_streams_bidi) || !SET(initial_max_streams_uni) ||
       !SET(max_idle_timeout) || !SET(active_connection_id_limit) ||
       !SET(ack_delay_exponent) || !SET(max_ack_delay) ||
-      !SET(max_datagram_frame_size)) {
+      !SET(max_datagram_frame_size) || !SET(disable_active_migration)) {
     return Nothing<Options>();
   }
 
@@ -159,6 +159,8 @@ std::string TransportParams::Options::ToString() const {
   res += prefix + "max ack delay: " + std::to_string(max_ack_delay);
   res += prefix +
          "max datagram frame size: " + std::to_string(max_datagram_frame_size);
+  res += prefix + "disable active migration: " +
+         std::to_string(disable_active_migration);
   res += indent.Close();
   return res;
 }
@@ -195,7 +197,8 @@ TransportParams::TransportParams(const Config& config, const Options& options)
   SET_PARAM(ack_delay_exponent);
   SET_PARAM(max_datagram_frame_size);
   SET_PARAM_V(max_idle_timeout, options.max_idle_timeout * NGTCP2_SECONDS);
-  SET_PARAM_V(disable_active_migration, 0);
+  SET_PARAM_V(disable_active_migration,
+              config.side == Side::SERVER && options.disable_active_migration);
   SET_PARAM_V(grease_quic_bit, 1);
   SET_PARAM_V(preferred_addr_present, 0);
   SET_PARAM_V(stateless_reset_token_present, 0);

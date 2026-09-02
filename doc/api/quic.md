@@ -1061,6 +1061,27 @@ added: v26.3.0
 The transport parameters advertised by the local endpoint during the handshake.
 Returns `null` if the session has been destroyed. Read only.
 
+### `session.migrate(endpoint)`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* `endpoint` {quic.QuicEndpoint} The local endpoint to migrate to.
+* Returns: {Promise}
+
+Starts client-initiated connection migration to `endpoint`. If the endpoint is
+not already bound, it is bound before path validation begins. The promise is
+fulfilled after the new network path has been validated and the session has
+switched to it. Existing streams remain attached to the same session.
+
+Only client sessions can initiate migration. The promise is rejected if the
+handshake has not been confirmed, the peer advertised
+`disableActiveMigration`, no unused connection ID is available, another
+migration is pending, or path validation fails. The endpoint that created the
+session remains responsible for its lifetime, while `endpoint` carries packets
+for the migrated path.
+
 ### `session.endpoint`
 
 <!-- YAML
@@ -3652,6 +3673,20 @@ is willing to receive. Set to `0` to disable datagram support. The peer
 will not send datagrams larger than this value. The actual maximum size of
 a datagram that can be _sent_ is determined by the peer's
 `maxDatagramFrameSize`, not this endpoint's value.
+
+#### `transportParams.disableActiveMigration`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* Type: {boolean}
+* **Default:** `false`
+
+When set to `true` by a server, advertises that the client must not initiate
+connection migration. This option can only be enabled for server sessions.
+The negotiated value is available on both
+`session.localTransportParams` and `session.remoteTransportParams`.
 
 #### `transportParams.retrySCID`
 

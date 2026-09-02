@@ -142,6 +142,7 @@ class SessionManager;
   V(port, "port")                                                              \
   V(preferred_address_ipv4, "preferredAddressIpv4")                            \
   V(preferred_address_ipv6, "preferredAddressIpv6")                            \
+  V(disable_active_migration, "disableActiveMigration")                        \
   V(preferred_address_strategy, "preferredAddressPolicy")                      \
   V(alpn, "alpn")                                                              \
   V(qlog, "qlog")                                                              \

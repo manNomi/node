@@ -14,7 +14,7 @@ if (!hasQuic) {
   skip('QUIC is not enabled');
 }
 
-const { listen } = await import('node:quic');
+const { connect, listen } = await import('node:quic');
 const { createPrivateKey } = await import('node:crypto');
 
 const key = createPrivateKey(fixtures.readKey('agent1-key.pem'));
@@ -25,6 +25,19 @@ const alpn = ['quic-test'];
 async function tryListen(sessionOpts) {
   return listen(mustNotCall(), { sni, alpn, ...sessionOpts });
 }
+
+await assert.rejects(tryListen({
+  transportParams: { disableActiveMigration: 'invalid' },
+}), {
+  code: 'ERR_INVALID_ARG_TYPE',
+});
+
+await assert.rejects(connect('127.0.0.1:1', {
+  alpn: 'quic-test',
+  transportParams: { disableActiveMigration: true },
+}), {
+  code: 'ERR_INVALID_ARG_VALUE',
+});
 
 // Invalid types for transport params are rejected.
 for (const param of [
@@ -66,6 +79,7 @@ const ep = await tryListen({
     ackDelayExponent: 3,
     maxAckDelay: 25,
     maxDatagramFrameSize: 1200,
+    disableActiveMigration: true,
   },
 });
 assert.ok(ep);

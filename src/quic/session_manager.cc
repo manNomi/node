@@ -51,6 +51,14 @@ void SessionManager::RemoveSession(const CID& scid) {
     primary_map_.erase(it->second.get());
     sessions_.erase(it);
   }
+
+  for (auto cid_it = dcid_to_scid_.begin(); cid_it != dcid_to_scid_.end();) {
+    if (cid_it->second == scid) {
+      cid_it = dcid_to_scid_.erase(cid_it);
+    } else {
+      ++cid_it;
+    }
+  }
 }
 
 void SessionManager::AssociateStatelessResetToken(

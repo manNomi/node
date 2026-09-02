@@ -117,6 +117,9 @@ class TransportParams final {
     uint16_t max_datagram_frame_size = kDefaultMaxPacketLength;
 
     // When true, communicates that the Session does not support active
+    // connection migration. This transport parameter is only sent by servers.
+    bool disable_active_migration = false;
+
     static const Options kDefault;
 
     void MemoryInfo(MemoryTracker* tracker) const override;
