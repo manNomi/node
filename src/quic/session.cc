@@ -4189,11 +4189,8 @@ void Session::EmitPathValidation(PathValidationResult result,
 
   if (!env()->can_call_into_js()) return;
 
-  if (!HasListenerFlag(impl_->state()->listener_flags,
-                       SessionListenerFlags::PATH_VALIDATION)) [[likely]] {
-    return;
-  }
-
+  // Diagnostics channel subscribers do not require an onpathvalidation
+  // callback. The JavaScript side skips conversion if neither is present.
   auto isolate = env()->isolate();
   CallbackScope<Session> cb_scope(this);
   auto& state = BindingData::Get(env());

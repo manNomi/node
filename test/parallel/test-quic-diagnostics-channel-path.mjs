@@ -4,7 +4,13 @@
 // quic.session.path.validation fires when path validation completes
 // during preferred address migration.
 
-import { hasQuic, skip, mustCall, mustNotCall } from '../common/index.mjs';
+import {
+  hasQuic,
+  skip,
+  mustCall,
+  mustCallAtLeast,
+  mustNotCall,
+} from '../common/index.mjs';
 import assert from 'node:assert';
 import dc from 'node:diagnostics_channel';
 
@@ -18,7 +24,7 @@ const clientChannelFired = Promise.withResolvers();
 
 // Subscribe to the path validation diagnostics channel.
 // Verify the client-side event fires with the correct properties.
-dc.subscribe('quic.session.path.validation', mustCall((msg) => {
+dc.subscribe('quic.session.path.validation', mustCallAtLeast((msg) => {
   assert.ok(msg.session, 'message should have session');
   assert.ok(msg.result, 'message should have result');
   assert.ok(msg.newLocalAddress, 'message should have newLocalAddress');
@@ -26,10 +32,9 @@ dc.subscribe('quic.session.path.validation', mustCall((msg) => {
   if (msg.preferredAddress === true) {
     clientChannelFired.resolve();
   }
-}));
+}, 1));
 
 const preferredEndpoint = await listen(mustNotCall(), {
-  onpathvalidation() {},
   onerror() {},
 });
 
@@ -39,17 +44,14 @@ const serverEndpoint = await listen(mustCall(async (serverSession) => {
   transportParams: {
     preferredAddressIpv4: preferredEndpoint.address,
   },
-  onpathvalidation() {},
   onerror() {},
 });
 
 const clientSession = await connect(serverEndpoint.address, {
   reuseEndpoint: false,
   preferredAddressPolicy: 'use',
-  // The onpathvalidation must be set for the JS handler to fire,
-  // which in turn publishes to the diagnostics channel.
-  onpathvalidation: mustCall(),
 });
+assert.strictEqual(clientSession.onpathvalidation, undefined);
 
 await Promise.all([clientSession.opened, clientChannelFired.promise]);
 
