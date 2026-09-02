@@ -475,6 +475,8 @@ class Session final : public AsyncWrap, private SessionTicket::AppData::Source {
 
   void Send(Packet::Ptr packet);
   void Send(Packet::Ptr packet, const PathStorage& path);
+  void SendConnectionClosePacket(Packet::Ptr packet,
+                                 const PathStorage& path);
   datagram_id SendDatagram(Store&& data);
 
   // Pending datagram accessors for use by SendPendingData.

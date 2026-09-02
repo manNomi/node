@@ -113,6 +113,7 @@ class Packet final {
       Endpoint& endpoint,
       const SocketAddress& destination,
       ngtcp2_conn* conn,
+      PathStorage& path,
       const QuicError& error);
 
   [[nodiscard]] static Ptr CreateImmediateConnectionClosePacket(

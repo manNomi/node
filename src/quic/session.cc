@@ -3063,6 +3063,32 @@ void Session::Send(Packet::Ptr packet, const PathStorage& path) {
   Send(std::move(packet));
 }
 
+void Session::SendConnectionClosePacket(Packet::Ptr packet,
+                                        const PathStorage& path) {
+  DCHECK(!is_destroyed());
+
+  // ngtcp2 might not populate the path when it writes no packet data.
+  if (packet->length() == 0 || path.path.local.addrlen == 0 ||
+      path.path.remote.addrlen == 0) {
+    return endpoint().Send(std::move(packet));
+  }
+
+  UpdatePath(path);
+
+  SocketAddress local_addr(path.path.local.addr);
+  SocketAddress remote_addr(path.path.remote.addr);
+  auto& mgr = BindingData::Get(env()).session_manager();
+  Endpoint* target = mgr.FindEndpointForAddress(local_addr);
+  if (target == nullptr) target = &endpoint();
+
+  packet->Redirect(static_cast<Packet::Listener*>(target), remote_addr);
+  Debug(this,
+        "Sending connection close via path %s -> %s",
+        local_addr,
+        remote_addr);
+  target->Send(std::move(packet));
+}
+
 datagram_id Session::SendDatagram(Store&& data) {
   DCHECK(!is_destroyed());
 
@@ -3674,12 +3700,15 @@ void Session::SendConnectionClose() {
   };
 
   if (is_server()) {
+    PathStorage path;
     if (auto packet = Packet::CreateConnectionClosePacket(
-            endpoint(), impl_->remote_address_, *this, impl_->last_error_))
+            endpoint(),
+            impl_->remote_address_,
+            *this,
+            path,
+            impl_->last_error_))
         [[likely]] {
-      // Send directly to endpoint, bypassing Session::Send which
-      // would drop the packet because we're now in the closing period.
-      return endpoint().Send(std::move(packet));
+      return SendConnectionClosePacket(std::move(packet), path);
     }
 
     // If we are unable to create a connection close packet then
@@ -3699,9 +3728,9 @@ void Session::SendConnectionClose() {
   }
 
   ngtcp2_vec vec = *packet;
-  Path path(impl_->local_address_, impl_->remote_address_);
+  PathStorage path;
   ssize_t nwrite = ngtcp2_conn_write_connection_close(*this,
-                                                      &path,
+                                                      &path.path,
                                                       nullptr,
                                                       vec.base,
                                                       vec.len,
@@ -3713,9 +3742,7 @@ void Session::SendConnectionClose() {
   }
 
   packet->Truncate(nwrite);
-  // Send directly to endpoint — ngtcp2 has entered the closing period
-  // at this point, so Session::Send() would drop the packet.
-  return endpoint().Send(std::move(packet));
+  return SendConnectionClosePacket(std::move(packet), path);
 }
 
 void Session::OnTimeout() {
