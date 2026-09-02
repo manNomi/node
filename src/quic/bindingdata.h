@@ -80,6 +80,7 @@ class SessionManager;
   V(cc_algorithm, "cc")                                                        \
   V(certificate_compression, "certificateCompression")                         \
   V(certs, "certs")                                                            \
+  V(cid_generator, "cidGenerator")                                             \
   V(code, "code")                                                              \
   V(ciphers, "ciphers")                                                        \
   V(crl, "crl")                                                                \
