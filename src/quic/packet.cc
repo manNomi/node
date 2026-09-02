@@ -105,6 +105,7 @@ Packet::Ptr Packet::CreateConnectionClosePacket(
     Endpoint& endpoint,
     const SocketAddress& destination,
     ngtcp2_conn* conn,
+    PathStorage& path,
     const QuicError& error) {
   auto packet = endpoint.CreatePacket(
       destination, kDefaultMaxPacketLength, "connection close");
@@ -112,7 +113,7 @@ Packet::Ptr Packet::CreateConnectionClosePacket(
   ngtcp2_vec vec = *packet;
 
   ssize_t nwrite = ngtcp2_conn_write_connection_close(
-      conn, nullptr, nullptr, vec.base, vec.len, error, uv_hrtime());
+      conn, &path.path, nullptr, vec.base, vec.len, error, uv_hrtime());
   if (nwrite < 0) return Ptr();
   packet->Truncate(static_cast<size_t>(nwrite));
   return packet;
